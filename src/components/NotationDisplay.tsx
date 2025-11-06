@@ -10,6 +10,9 @@ import {
 } from "vexflow";
 import type { Song, SongEvent, TabNote as SongTabNote } from "../types/song";
 
+type RenderCtx = ReturnType<Renderer["getContext"]>;
+
+// SVG viewport size for the rendered TAB staff
 const DEFAULT_WIDTH = 900;
 const DEFAULT_HEIGHT = 220;
 const STRING_OPEN_MIDI: Record<number, number> = {
@@ -21,6 +24,7 @@ const STRING_OPEN_MIDI: Record<number, number> = {
   6: 40, // E2
 };
 
+// Simple mapping from beat length (in MusicXML "beats") -> VexFlow duration
 const DURATION_MAP: Record<number, string> = {
   4: "w",
   2: "h",
@@ -66,20 +70,25 @@ export default function NotationDisplay({
     container.innerHTML = "";
     if (!eventsToRender.slice.length) return;
 
+    // Set up a fresh VexFlow SVG renderer every time the windowed slice changes.
     const renderer = new Renderer(container, Renderer.Backends.SVG);
     renderer.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
     const context = renderer.getContext();
-    context.setFont("JetBrains Mono", 16, "500");
-    context.setFillStyle("#ffffff");
+    context.setFillStyle("rgba(255,255,255,0.5)");
     context.setStrokeStyle(STAVE_COLOR);
 
     const STAVE_PADDING = 40;
-    const tabStave = new TabStave(STAVE_PADDING, 20, DEFAULT_WIDTH - 2 * STAVE_PADDING);
+    const tabStave = new TabStave(
+      STAVE_PADDING,
+      20,
+      DEFAULT_WIDTH - 2 * STAVE_PADDING
+    );
     tabStave.addTabGlyph();
     tabStave.setContext(context);
     tabStave.setStyle({ strokeStyle: STAVE_COLOR, fillStyle: STAVE_COLOR });
     tabStave.draw();
 
+    // Convert each SongEvent into a VexFlow TabNote, flagging the active event.
     const tabNotes = eventsToRender.slice.map((event, idx) =>
       songEventToTabNote(event, eventsToRender.offset + idx === currentIndex)
     );
@@ -91,10 +100,12 @@ export default function NotationDisplay({
     voice.setStrict(false);
     voice.addTickables(tabNotes);
 
-    new Formatter().joinVoices([voice]).format([voice], DEFAULT_WIDTH - 2 * STAVE_PADDING - 40);
+    new Formatter()
+      .joinVoices([voice])
+      .format([voice], DEFAULT_WIDTH - 2 * STAVE_PADDING - 40);
     voice.draw(context, tabStave);
 
-    // Add bar lines between measures
+    // Draw simple bar lines whenever the measure number changes.
     let lastMeasure = eventsToRender.slice[0]?.measureNumber;
     tabNotes.forEach((note, idx) => {
       const event = eventsToRender.slice[idx];
@@ -108,25 +119,91 @@ export default function NotationDisplay({
     });
   }, [eventsToRender, song.timeSignature, currentIndex]);
 
-  return <div className="notation-display" ref={containerRef} aria-label="Guitar tablature" />;
+  return (
+    <div
+      className="notation-display"
+      ref={containerRef}
+      aria-label="Guitar tablature"
+    />
+  );
 }
 
 function songEventToTabNote(event: SongEvent, isActive: boolean): VFTabNote {
   const positions = event.notes.map((n) => buildPosition(n));
   const duration = pickDuration(event.durationBeats);
-  const tabNote = new VFTabNote(
+  const tabNote = new HighlightedTabNote(
     {
       positions,
       duration,
     },
-    false
+    false,
+    isActive
   );
 
   tabNote.setStyle({
-    fillStyle: isActive ? ACTIVE_COLOR : NOTE_COLOR,
-    strokeStyle: isActive ? ACTIVE_COLOR : NOTE_COLOR,
+    fillStyle: NOTE_COLOR,
+    strokeStyle: NOTE_COLOR,
   });
   return tabNote;
+}
+
+class HighlightedTabNote extends VFTabNote {
+  private readonly isActive: boolean;
+
+  constructor(
+    opts: ConstructorParameters<typeof VFTabNote>[0],
+    isGhost: boolean,
+    isActive: boolean
+  ) {
+    super(opts, isGhost);
+    this.isActive = isActive;
+  }
+
+  draw(): this {
+    const ctx = this.checkContext();
+    const x = this.getAbsoluteX();
+    const yCenter = this.getYs()[0] ?? 0;
+    const width = 38;
+    const height = 32;
+    const y = yCenter - height / 2;
+
+    ctx.save();
+    ctx.setFillStyle(this.isActive ? ACTIVE_BG : INACTIVE_BG);
+    drawRoundedRect(
+      ctx,
+      x - width / 2,
+      y,
+      width,
+      height,
+      6
+    );
+    ctx.restore();
+
+    super.draw();
+    return this;
+  }
+}
+
+function drawRoundedRect(
+  ctx: RenderCtx,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number
+) {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + width - radius, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+  ctx.lineTo(x + width, y + height - radius);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+  ctx.lineTo(x + radius, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
+  ctx.closePath();
+  ctx.fill();
 }
 
 function buildPosition(note: SongTabNote): { str: number; fret: number } {
@@ -181,4 +258,5 @@ function pickDuration(durationBeats: number): string {
 }
 const STAVE_COLOR = "#a8b4e6";
 const NOTE_COLOR = "#ffffff";
-const ACTIVE_COLOR = "#6df3ff";
+const ACTIVE_BG = "rgba(111, 245, 255, 0.25)";
+const INACTIVE_BG = "rgba(255, 255, 255, 0.08)";
