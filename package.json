@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "sync-ort-assets": "node scripts/sync-ort-assets.mjs",
+    "postinstall": "npm run sync-ort-assets"
   },
   "dependencies": {
     "@spotify/basic-pitch": "^1.0.1",

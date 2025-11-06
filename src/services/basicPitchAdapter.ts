@@ -1,11 +1,14 @@
 import { outputToNotesPoly, noteFramesToTime } from "@spotify/basic-pitch";
-import { InferenceSession, Tensor } from "onnxruntime-web";
+import { InferenceSession, Tensor, env } from "onnxruntime-web";
 import type { NoteEvent as WorkerNoteEvent } from "../types/audio";
 
 const MODEL_WINDOW_SAMPLES = 43844; // matches Basic Pitch window
 const INPUT_NAME = "serving_default_input_2:0";
 const OUTPUT_FRAMES = "StatefulPartitionedCall:2";
 const OUTPUT_ONSETS = "StatefulPartitionedCall:1";
+
+env.wasm.wasmPaths = `${import.meta.env.BASE_URL}onnxruntime-web/`;
+env.wasm.proxy = true;
 
 export interface BasicPitchLike {
   init(): Promise<void>;

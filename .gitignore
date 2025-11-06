@@ -11,6 +11,9 @@ lerna-debug.log*
 # Dependencies
 node_modules/
 
+# Generated ONNX Runtime assets
+public/onnxruntime-web/
+
 # Production build
 build/
 dist/
