@@ -9,7 +9,7 @@ import {
 import type { Song, SongEvent, TabNote as SongTabNote } from "../types/song";
 
 const DEFAULT_WIDTH = 900;
-const DEFAULT_HEIGHT = 200;
+const DEFAULT_HEIGHT = 220;
 const STRING_OPEN_MIDI: Record<number, number> = {
   1: 64, // E4
   2: 59, // B3
@@ -43,6 +43,18 @@ export default function NotationDisplay({
   const eventsToRender = useMemo(() => {
     const start = Math.max(0, currentIndex - Math.floor(windowSize / 2));
     const slice = song.events.slice(start, start + windowSize);
+    if (import.meta.env.DEV && slice.length && start === 0) {
+      // Helpful debug log to confirm positions once per load
+      console.debug(
+        "[NotationDisplay] First event positions",
+        slice[0].notes.map((note) => ({
+          name: note.name,
+          inferred: inferStringAndFret(note.midi),
+          originalString: note.string,
+          originalFret: note.fret,
+        }))
+      );
+    }
     return { slice, offset: start };
   }, [song.events, currentIndex, windowSize]);
 
@@ -60,7 +72,9 @@ export default function NotationDisplay({
 
     const tabStave = new TabStave(10, 20, DEFAULT_WIDTH - 20);
     tabStave.addTabGlyph();
-    tabStave.setContext(context).draw();
+    tabStave.setContext(context);
+    tabStave.setStyle({ strokeStyle: STAVE_COLOR, fillStyle: STAVE_COLOR });
+    tabStave.draw();
 
     const tabNotes = eventsToRender.slice.map((event, idx) =>
       songEventToTabNote(event, eventsToRender.offset + idx === currentIndex)
@@ -91,21 +105,50 @@ function songEventToTabNote(event: SongEvent, isActive: boolean): VFTabNote {
     false
   );
 
-  if (isActive) {
-    tabNote.setStyle({ strokeStyle: "#00d2ff", fillStyle: "#00d2ff" });
-  }
-
+  tabNote.setStyle({
+    fillStyle: isActive ? ACTIVE_COLOR : NOTE_COLOR,
+    strokeStyle: isActive ? ACTIVE_COLOR : NOTE_COLOR,
+  });
   return tabNote;
 }
 
 function buildPosition(note: SongTabNote): { str: number; fret: number } {
-  const str = clampStringNumber(note.string);
-  if (note.fret != null) {
-    return { str, fret: note.fret };
+  const providedString = note.string;
+  const providedFret = note.fret;
+  if (providedString && providedFret != null) {
+    return { str: clampStringNumber(providedString), fret: providedFret };
   }
-  const openMidi = STRING_OPEN_MIDI[str] ?? 40;
-  const fret = Math.max(0, note.midi - openMidi);
-  return { str, fret };
+  return inferStringAndFret(note.midi);
+}
+
+type PositionCandidate = { str: number; fret: number; delta: number };
+
+function inferStringAndFret(midi: number): { str: number; fret: number } {
+  const entries = Object.entries(STRING_OPEN_MIDI) as [string, number][];
+  let best: PositionCandidate | undefined;
+  entries.forEach(([strKey, openMidi]) => {
+    const fret = midi - openMidi;
+    if (fret < 0 || fret > 24) return;
+    const delta = Math.abs(fret);
+    if (!best || delta < best.delta) {
+      best = { str: Number(strKey), fret, delta };
+    }
+  });
+  if (best) {
+    return { str: best.str, fret: best.fret };
+  }
+  const stringsByCloseness: PositionCandidate[] = entries
+    .map(([strKey, openMidi]) => ({
+      str: Number(strKey),
+      fret: Math.max(0, midi - openMidi),
+      delta: Math.abs(midi - openMidi),
+    }))
+    .sort((a, b) => a.delta - b.delta);
+  const picked = stringsByCloseness[0];
+  if (picked) {
+    return { str: picked.str, fret: picked.fret };
+  }
+  return { str: 1, fret: 0 };
 }
 
 function clampStringNumber(value?: number): number {
@@ -119,3 +162,6 @@ function pickDuration(durationBeats: number): string {
   if (durationBeats >= 0.75 && durationBeats < 1) return "8d";
   return "q";
 }
+const STAVE_COLOR = "#6d78a8";
+const NOTE_COLOR = "#d7e2ff";
+const ACTIVE_COLOR = "#6df3ff";
