@@ -7,7 +7,8 @@ const INPUT_NAME = "serving_default_input_2:0";
 const OUTPUT_FRAMES = "StatefulPartitionedCall:2";
 const OUTPUT_ONSETS = "StatefulPartitionedCall:1";
 
-env.wasm.wasmPaths = `${import.meta.env.BASE_URL}onnxruntime-web/`;
+// Use CDN for WASM files to avoid Vite bundling issues
+env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/";
 
 export interface BasicPitchLike {
   init(): Promise<void>;
@@ -90,5 +91,5 @@ export class BasicPitchAdapter implements BasicPitchLike {
 }
 
 export const basicPitchAdapter = new BasicPitchAdapter(
-  `${import.meta.env.BASE_URL}models/basic-pitch-nmp.onnx`
+  '/models/basic-pitch-nmp.onnx'
 );
