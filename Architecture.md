@@ -65,23 +65,23 @@ This document outlines the system architecture, data models, API design, and dev
 #### 2. Audio Engine
 **Responsibilities:**
 - Capture microphone input via Web Audio API
-- Perform real-time pitch detection
-- Detect single notes and chords (polyphonic)
+- Stream audio into Basic Pitch for real-time polyphonic transcription
+- Detect single notes and chords (polyphonic) with configurable policies
 - Calculate timing and accuracy
 - Provide audio feedback
 
 **Key Modules:**
-- `AudioCapture` - Microphone access and stream management
-- `PitchDetector` - FFT-based frequency analysis
-- `ChordRecognizer` - Polyphonic pitch detection and chord matching
+- `AudioWorklet` + `SharedArrayBuffer` ring buffer for low-latency capture
+- `BasicPitchWorker` - Runs the Spotify Basic Pitch model via ONNX Runtime Web / TF.js
+- `ChordPolicyEngine` - Applies K-of-N / includes-target / bass-priority rules
 - `TimingAnalyzer` - Compare played notes to expected timing
 - `FeedbackGenerator` - Audio cues for correct/incorrect notes
 
 **Technology:**
-- Web Audio API for audio input/processing
-- FFT (Fast Fourier Transform) for frequency analysis
-- Autocorrelation for pitch detection
-- Optional: TensorFlow.js for ML-enhanced detection
+- Web Audio API + AudioWorklet for capture
+- SharedArrayBuffer (COOP/COEP) for zero-copy streaming to workers
+- Spotify Basic Pitch model (`@spotify/basic-pitch`) executed via ONNX Runtime Web (WebGPU/WebGL/WASM) or TensorFlow.js
+- Optional: supplemental mono detectors (e.g., CREPE) for future single-note drills
 
 #### 3. State Management
 **Responsibilities:**
@@ -518,80 +518,37 @@ GET    /api/achievements/user/:userId # Get user's unlocked achievements
 
 ## Phase 1: MVP (Minimum Viable Product)
 
-**Goal:** Prove core concept - detect guitar notes and provide feedback
+**Goal:** Prove core concept - detect guitar notes and chords, provide real-time feedback
 
-**Timeline:** 3-4 weeks
+**Timeline:** 4 weeks
 
-### Features (True Minimum)
-- **ONE hardcoded song** (Song of Storms) - no song library UI
-- **Both single notes AND chords detection** using chromagram (Meyda)
-- **Tab view only** (no staff notation)
-- **Wait mode only** (no Play/tempo mode)
-- **Visual feedback** (green/red/yellow for correct/incorrect/partial chords)
-- **Basic accuracy score** at end
-- **No backend** - everything in browser
-- **No user accounts** - single session only
-- **No tuner component** - assume guitar is in tune
-- **No persistence** - refresh loses progress
+**Status:** Planning complete ✅ → Implementation next
 
-### Technical Deliverables
+### Features Summary
+- ONE hardcoded song (Song of Storms)
+- Basic Pitch ML-powered chord detection
+- Tab view with Wait mode practice
+- Visual feedback (green/red/yellow)
+- Session summary with accuracy stats
+- Browser-only (no backend)
 
-**Week 1: Audio Foundation with Chromagram**
-- Initialize Vite + React + TypeScript project
-- Install dependencies: `meyda`, `fast-xml-parser`, `vexflow`
-- Implement `AudioEngine` class with Meyda integration
-- Implement `ChordDetector` class (chromagram-based)
-- Create simple UI with "Start" button
-- **Deliverable:** Console.log shows detected pitch classes (e.g., "E, G, B")
+### Technical Approach
+- **Audio Pipeline:** AudioWorklet → SharedArrayBuffer → Worker (Basic Pitch inference)
+- **Chord Detection:** Polyphonic transcription with K-of-N policy engine
+- **UI:** React + VexFlow tabs
+- **Target Latency:** <250ms from note played to feedback
 
-**Week 2: MusicXML & Display**
-- Implement `musicXmlParser` to parse Song of Storms
-- Keep ALL notes including chords
-- Group notes by time position
-- Integrate VexFlow for tab rendering (with stacked chord notation)
-- Display first measure with highlighted current note/chord
-- **Deliverable:** Tabs render on screen with chords displayed
-
-**Week 3: Chord Matching & Wait Mode**
-- Implement `chordMatcher` (compare detected vs expected)
-- Implement `WaitModeController` for note/chord progression
-- Connect chord detector to wait mode controller
-- Advance when correct note/chord detected
-- Show partial feedback (yellow = some notes in chord correct)
-- **Deliverable:** Play notes/chords, see tabs advance with color-coded feedback
-
-**Week 4: Complete MVP**
-- Build session summary screen (show accuracy %)
-- Add restart button
-- Basic styling (center content, readable)
-- Manual testing with real guitar
-- Tune CHROMA_THRESHOLD based on testing
-- **Deliverable:** Working end-to-end flow
+**📋 For complete implementation details, see [TechnicalSpec.md](./TechnicalSpec.md)**
+- Week-by-week development plan
+- Complete code scaffolding
+- Configuration and troubleshooting
 
 ### Success Criteria
-- Can load and display Song of Storms tabs (including chords)
-- Can detect single notes (E2, A2, D3, etc.)
-- Can detect chords (E minor = E + G + B)
-- Tabs advance in Wait mode when correct note/chord played
-- Shows partial feedback for chords ("2 out of 3 notes correct")
-- Shows final accuracy score
-- Works in Chrome/Firefox on desktop
-- **Total of ~300-400 lines of actual application code**
-
-### Explicitly Out of Scope
-- Multiple songs or song selection
-- Song library UI
-- User authentication
-- Backend/database/API
-- Play mode (tempo-based)
-- Staff notation
-- Tuner
-- Progress persistence
-- Session history
-- Achievements
-- Speed control
-- Section looping
-- Mobile optimization
+- Accurate single note & chord detection
+- Tabs advance in Wait mode when correct
+- Partial chord feedback working
+- <250ms perceived latency
+- Works in Chrome/Firefox
 
 ## Phase 2: Enhanced Features
 

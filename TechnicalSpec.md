@@ -10,16 +10,16 @@ This document provides implementation-level details for building the Raziel MVP.
 
 **Goal:** Prove the core concept - detect guitar notes AND chords, provide feedback.
 
-**Features (Minimal Set):**
-- Load **one** pre-existing MusicXML file (Song of Storms)
-- Display guitar tablature (tab view only, no staff notation)
-- Capture audio from microphone
-- Detect **both single notes AND chords** using chromagram-based detection
-- **Wait mode** only (no Play/tempo mode)
-- Basic visual feedback (green/red/yellow for correct/incorrect/partial)
-- Simple accuracy score at the end
-- **No user accounts, no backend** - everything runs in browser
-- **No song library UI** - hardcode one song to start
+- **Features (Minimal Set):**
+  - Load **one** pre-existing MusicXML file (Song of Storms)
+  - Display guitar tablature (tab view only, no staff notation)
+  - Capture audio from microphone
+  - Detect **both single notes AND chords** using the Basic Pitch streaming pipeline (AudioWorklet → SharedArrayBuffer → Worker inference)
+  - **Wait mode** only (no Play/tempo mode)
+  - Basic visual feedback (green/red/yellow for correct/incorrect/partial)
+  - Simple accuracy score at the end
+  - **No user accounts, no backend** - everything runs in browser
+  - **No song library UI** - hardcode one song to start
 
 **Explicitly NOT in MVP:**
 - ❌ User authentication
@@ -344,435 +344,95 @@ interface NoteGroup {
 
 # Chord & Pitch Detection Implementation
 
-## Research-Backed Approach
+## Selected Approach: Basic Pitch Streaming Pipeline
 
-### Industry Standard: Chromagram / Pitch Class Profile (PCP)
+Raziel now standardizes on Spotify's **Basic Pitch** model running entirely in the browser. Rather than deriving a 12-bin chromagram with Meyda, we stream a polyphonic transcription model across short audio windows so we can reason about true note onsets, salience, and sustained tones. This approach matches the dedicated architecture captured in `Architecture - Pitch Detection.md` and the implementation scaffold in `Implementation Plan - Pitch Detection.md`.
 
-After researching current best practices in guitar chord detection (see references), the **chromagram** (also called Pitch Class Profile) is the proven approach for chord recognition:
+### Why Basic Pitch instead of chromagram-only detection?
+- **Polyphonic accuracy:** Basic Pitch is trained on multi-note guitar data and preserves per-note MIDI + cents output, which is more reliable than heuristic chroma thresholds for rolled chords or noisy environments.
+- **Latency control:** By re-running inference every 40 ms over a rolling 1.3 s window we achieve <300 ms perceived latency without sacrificing stability.
+- **Policy flexibility:** Having explicit MIDI events lets us implement K-of-N, includes-target, and bass-priority policies with octave invariance and configurable detune tolerances.
+- **Future-proofing:** The same pipeline scales to Play mode, analytics, and recording replays without swapping out the detection core.
 
-**Why Chromagram:**
-- Industry standard for chord recognition in music information retrieval (MIR)
-- Reduces all frequencies to 12 pitch classes (C, C#, D, etc.) regardless of octave
-- Perfect for guitar chords where octave doesn't matter (E3 and E4 both = "E")
-- Handles polyphonic audio (multiple notes simultaneously)
-- Robust to overtones and harmonics
+### Architecture Overview
+```
+Mic → AudioWorklet (48 kHz) → SharedArrayBuffer Ring Buffer → Web Worker
+     → Resample to 22.05 kHz → Basic Pitch model → Note Events → Policy engine
+     → React UI (Wait mode state machine, feedback, logging)
+```
 
-**How It Works:**
-1. Use **Constant-Q Transform** (CQT) instead of FFT - uses logarithmically-spaced frequencies like human hearing
-2. Compute energy in each of 12 pitch classes
-3. Get a 12-dimensional vector representing which notes are present
-4. Match against expected chord
+Key tunables (baseline):
+- Rolling window `W = 1.3 s`, decision tail `G = 120 ms`, inference cadence `Δ = 40 ms`
+- Guitar range gate `E2–E6` (extend to `D2` for Drop-D)
+- Confirmation threshold `framesConfirm = 3` (≈120 ms), detune tolerance `±50 cents`
 
-**Alternatives Considered:**
-- Simple autocorrelation: Can't detect multiple simultaneous pitches (chords)
-- Pure FFT peak detection: Too sensitive to harmonics, hard to distinguish fundamentals
-- Machine Learning: Overkill for MVP, requires training data
-- Multiple autocorrelation passes: Computationally expensive, less accurate
+### Core Modules
+1. **AudioWorkletProcessor** – captures mono input, writes Float32 samples into a `SharedArrayBuffer`. Requires COOP/COEP headers (already documented in the implementation plan).
+2. **Shared ring buffer util** – wraps SAB read/write operations with Atomics to safely transfer the last `W` seconds into the worker on demand.
+3. **Inference Worker** – wakes up every `tickMs`, copies the tail window, resamples to 22.05 kHz, runs Basic Pitch via ONNX Runtime Web (preferred) or TF.js, and emits note events plus timing metadata.
+4. **Basic Pitch adapter** – isolates the runtime (WebGPU/WebGL/WASM). Swappable so we can ship fp16/int8 builds or move between ORT and TF.js without touching hook consumers.
+5. **Chord policy engine** – converts the note events in the `[now-G, now]` tail into pitch classes, applies policy rules (K-of-N by default) and emits `CHORD_MATCH` / `CHORD_MISS` events with partial feedback info.
+6. **`useChordVerifier` hook** – React-friendly surface that exposes `start()`, `stop()`, `setExpected(chordSpec)` and streams the worker results to Wait mode / feedback components. The hook also handles warm-up, permission prompts, and teardown.
 
-### JavaScript Library Choice: Meyda
+Detailed scaffolding (types, worker wiring, resampler, hook) lives in `Implementation Plan - Pitch Detection.md`. Treat that file as the canonical reference when creating `src/audio`, `src/workers`, and `src/hooks` files.
 
-**Use:** [Meyda](https://meyda.js.org/) - Audio feature extraction library
-
+### Dependencies
+Install the audio stack packages once the Vite project is initialized:
 ```bash
-npm install meyda
+npm install @spotify/basic-pitch onnxruntime-web tonal
 ```
+Optional: include `@tensorflow/tfjs` if we need the TF.js build, otherwise lean on ORT Web for better WebGPU support.
 
-**Why Meyda:**
-- Built specifically for Web Audio API
-- Has **chroma** feature extraction built-in (12-bin chromagram)
-- Lightweight (~50KB)
-- Actively maintained
-- Well-documented
-- Used in production applications
-
-**Alternatives:**
-- **Essentia.js**: More comprehensive but heavier (~2MB), includes HPCP (Harmonic PCP)
-- **chord_detector**: Outdated (8 years old)
-- **Custom implementation**: Time-consuming, harder to get right
-
-**References:**
-- Fujishima, T. (1999). "Realtime Chord Recognition of Musical Sound"
-- Meyda documentation: https://meyda.js.org/
-- Music Technology Group, Essentia.js research papers
-
-## Web Audio API Setup with Meyda
-
+### Worker Loop Summary
 ```typescript
-// services/audioEngine.ts
-import Meyda from 'meyda';
+// pseudo-code based on Implementation Plan
+const workerState = {
+  model: await loadBasicPitchModel(),
+  ring: SharedRingBuffer.from(initMessage.sab),
+  windowSamples: initMessage.windowSec * initMessage.sampleRate,
+};
 
-export class AudioEngine {
-  private audioContext: AudioContext;
-  private analyser: AnalyserNode;
-  private microphone: MediaStreamAudioSourceNode | null = null;
-  private meydaAnalyzer: any; // Meyda analyzer instance
-
-  constructor() {
-    this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    this.analyser = this.audioContext.createAnalyser();
-
-    // Configuration for chroma extraction
-    this.analyser.fftSize = 8192;  // Larger FFT for better frequency resolution
-    this.analyser.smoothingTimeConstant = 0.8;  // Smooth out noise
-  }
-
-  async startMicrophone(): Promise<void> {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-        sampleRate: 44100  // Standard sample rate
-      }
-    });
-
-    this.microphone = this.audioContext.createMediaStreamSource(stream);
-    this.microphone.connect(this.analyser);
-    // Note: Don't connect to destination - we don't want to hear ourselves
-
-    // Initialize Meyda analyzer
-    this.meydaAnalyzer = Meyda.createMeydaAnalyzer({
-      audioContext: this.audioContext,
-      source: this.microphone,
-      bufferSize: 8192,
-      featureExtractors: ['chroma', 'rms'],  // Extract chromagram and signal strength
-      callback: null  // We'll get features manually
-    });
-  }
-
-  getChroma(): number[] | null {
-    if (!this.meydaAnalyzer) return null;
-
-    const features = this.meydaAnalyzer.get(['chroma', 'rms']);
-
-    // Check if signal is strong enough
-    if (!features || features.rms < 0.01) {
-      return null;  // Too quiet
-    }
-
-    // Chroma is a 12-element array representing pitch classes
-    // [C, C#, D, D#, E, F, F#, G, G#, A, A#, B]
-    return features.chroma;
-  }
-
-  getSampleRate(): number {
-    return this.audioContext.sampleRate;
-  }
-
-  stop(): void {
-    if (this.microphone) {
-      this.microphone.disconnect();
-      this.microphone.mediaStream.getTracks().forEach(track => track.stop());
-    }
-  }
-}
+setInterval(async () => {
+  workerState.ring.readLast(windowBuffer);
+  resampleLinear(windowBuffer, 48000, 22050, resampledBuffer);
+  const noteEvents = await runBasicPitch(resampledBuffer);
+  const verdict = evaluateChordPolicy(noteEvents, currentExpectedChord, config);
+  postMessage(verdict);
+}, tickMs);
 ```
 
-## Chord Detection Algorithm Using Chromagram
+### Policy Engine Essentials
+- **K-of-N (default):** success when ≥K expected pitch classes are confirmed in the tail window. Use `K = min(2, N)` for triads unless a chord explicitly requires all tones.
+- **Includes-target:** success when at least one expected pitch class is present (useful for melodic passages while a chord sustains).
+- **Bass-priority:** success only if the lowest confirmed MIDI note maps to one of the expected pitch classes (good for root-focus exercises).
+- **Partial feedback:** always emit `matched[]` and `missing[]` pitch classes so the UI can color chords yellow or show “Missing: B”.
+- **Debounce:** after a success, suppress another success for ~200 ms to avoid multiple triggers during sustain.
 
-```typescript
-// services/chordDetector.ts
+### React Integration Flow
+1. User clicks “Start practice” → `useChordVerifier.start()` requests mic permission, initializes AudioWorklet + worker, and performs one warm-up inference.
+2. Practice screen subscribes to hook callbacks (`onResult`, `onError`). When the state machine loads a new note/chord group, call `setExpected({ name, pcs, K })`.
+3. Worker emits events:
+   - `TICK` for diagnostics (UI can show latency)
+   - `NOTES` for debugging overlays (optional)
+   - `CHORD_MATCH` / `CHORD_MISS` with `matched`, `missing`, `t`
+4. Wait mode consumes these events to advance, set feedback colors, and update streak/accuracy counters.
 
-// Pitch class names corresponding to chroma array indices
-const PITCH_CLASSES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+### Reference Implementation
+Follow **Implementation Plan – Pitch Detection** for:
+- COOP/COEP server headers (Vite + production hosting)
+- Type definitions (`PitchClass`, `ChordSpec`, worker messages)
+- `SharedRingBuffer` helper
+- Resampling utility
+- Worker + hook wiring
+- Minimal demo component for local verification
 
-export interface DetectedNotes {
-  pitchClasses: string[];  // e.g., ['E', 'G', 'B']
-  confidence: number;       // Overall confidence (0-1)
-}
+That file is intentionally production-ready; copy the scaffold into `src/audio`, `src/workers`, and `src/hooks`, then tailor as needed.
 
-export class ChordDetector {
-  private readonly CHROMA_THRESHOLD = 0.15;  // Minimum energy to consider a pitch class present
-
-  /**
-   * Convert chromagram (12-element array) to detected pitch classes
-   * @param chroma - 12-element array from Meyda [C, C#, D, ..., B]
-   * @returns Detected notes with confidence
-   */
-  detectNotes(chroma: number[]): DetectedNotes | null {
-    if (!chroma || chroma.length !== 12) return null;
-
-    // Normalize chroma vector (make it sum to 1)
-    const sum = chroma.reduce((a, b) => a + b, 0);
-    if (sum < 0.01) return null; // Too quiet
-
-    const normalizedChroma = chroma.map(v => v / sum);
-
-    // Find peaks above threshold
-    const detectedPitches: string[] = [];
-    const values: number[] = [];
-
-    for (let i = 0; i < 12; i++) {
-      if (normalizedChroma[i] > this.CHROMA_THRESHOLD) {
-        detectedPitches.push(PITCH_CLASSES[i]);
-        values.push(normalizedChroma[i]);
-      }
-    }
-
-    if (detectedPitches.length === 0) return null;
-
-    // Calculate average confidence
-    const confidence = values.reduce((a, b) => a + b, 0) / values.length;
-
-    return {
-      pitchClasses: detectedPitches,
-      confidence
-    };
-  }
-
-  /**
-   * Add octave information to pitch classes based on expected notes
-   * For MVP: Simple matching without worrying too much about octave
-   */
-  matchToExpectedNotes(detected: string[], expected: string[]): string[] {
-    // Extract pitch classes from expected notes (remove octave)
-    const expectedPitchClasses = expected.map(note => note.replace(/\d+$/, ''));
-
-    // Match detected pitch classes, assuming octaves from expected
-    const matched: string[] = [];
-
-    for (const expectedFull of expected) {
-      const pitchClass = expectedFull.replace(/\d+$/, '');
-      if (detected.includes(pitchClass)) {
-        matched.push(expectedFull);  // Keep the full note with octave
-      }
-    }
-
-    return matched;
-  }
-
-  /**
-   * Normalize note names for comparison (handle enharmonic equivalents)
-   */
-  normalizePitchClass(note: string): string {
-    // Remove octave number
-    const pitchClass = note.replace(/\d+$/, '');
-
-    // Map flats to sharps for consistent comparison
-    const flatToSharp: Record<string, string> = {
-      'Db': 'C#',
-      'Eb': 'D#',
-      'Gb': 'F#',
-      'Ab': 'G#',
-      'Bb': 'A#'
-    };
-
-    return flatToSharp[pitchClass] || pitchClass;
-  }
-}
-```
-
-## Chord Matching Logic
-
-```typescript
-// services/chordMatcher.ts
-
-export interface MatchResult {
-  isCorrect: boolean;
-  correctNotes: string[];   // Notes that were played correctly
-  missingNotes: string[];   // Notes that should be played but weren't
-  extraNotes: string[];     // Notes that were played but shouldn't be
-  accuracy: number;         // 0-100%
-}
-
-export function matchChord(
-  detectedNotes: string[],
-  expectedNotes: string[]
-): MatchResult {
-  // Normalize all notes (remove octaves for comparison)
-  const normalize = (note: string) => note.replace(/\d+$/, '');
-
-  const detectedSet = new Set(detectedNotes.map(normalize));
-  const expectedSet = new Set(expectedNotes.map(normalize));
-
-  // Find overlaps
-  const correctNotes = expectedNotes.filter(n => detectedSet.has(normalize(n)));
-  const missingNotes = expectedNotes.filter(n => !detectedSet.has(normalize(n)));
-  const extraNotes = detectedNotes.filter(n => !expectedSet.has(normalize(n)));
-
-  // Calculate accuracy
-  const accuracy = expectedNotes.length > 0
-    ? (correctNotes.length / expectedNotes.length) * 100
-    : 0;
-
-  // Determine if correct:
-  // - For single notes: must match exactly
-  // - For 2-note chords: need both notes
-  // - For 3+ note chords: need at least 66% (2 out of 3, 3 out of 4, etc.)
-  let isCorrect: boolean;
-  if (expectedNotes.length === 1) {
-    isCorrect = correctNotes.length === 1 && missingNotes.length === 0;
-  } else if (expectedNotes.length === 2) {
-    isCorrect = correctNotes.length === 2;
-  } else {
-    const threshold = Math.ceil(expectedNotes.length * 0.66);
-    isCorrect = correctNotes.length >= threshold;
-  }
-
-  return {
-    isCorrect,
-    correctNotes,
-    missingNotes,
-    extraNotes,
-    accuracy
-  };
-}
-```
-
-## Detection Loop
-
-```typescript
-// In PracticeScreen component or a detection service
-function startDetectionLoop() {
-  const audioEngine = new AudioEngine();
-  await audioEngine.startMicrophone();
-
-  const chordDetector = new ChordDetector();
-  let lastDetectionTime = 0;
-  const DETECTION_INTERVAL = 100; // Detect every 100ms (10 times per second)
-
-  function detectFrame(timestamp: number) {
-    // Throttle detection to avoid processing every frame
-    if (timestamp - lastDetectionTime < DETECTION_INTERVAL) {
-      requestAnimationFrame(detectFrame);
-      return;
-    }
-    lastDetectionTime = timestamp;
-
-    // Get chromagram from Meyda
-    const chroma = audioEngine.getChroma();
-
-    if (chroma) {
-      const detected = chordDetector.detectNotes(chroma);
-
-      if (detected && detected.pitchClasses.length > 0) {
-        console.log(`Detected pitch classes: ${detected.pitchClasses.join(', ')}`);
-        console.log(`Confidence: ${(detected.confidence * 100).toFixed(1)}%`);
-
-        // Pass to chord matching logic
-        handleDetectedChord(detected.pitchClasses);
-      }
-    }
-
-    requestAnimationFrame(detectFrame);
-  }
-
-  requestAnimationFrame(detectFrame);
-}
-```
-
----
-
-# Note & Chord Matching Logic (Wait Mode)
-
-## Wait Mode Implementation
-
-In Wait mode:
-1. Show current note/chord that needs to be played
-2. Listen for that note/chord
-3. When detected correctly, advance to next
-4. Show partial feedback for chords (yellow = some notes correct)
-5. Track accuracy
-
-```typescript
-// services/waitModeController.ts
-import { matchChord, MatchResult } from './chordMatcher';
-import { NoteGroup } from './musicXmlParser';
-
-export interface FeedbackResult {
-  isCorrect: boolean;
-  isPartial: boolean;     // True if some (but not all) notes in chord are correct
-  matchResult: MatchResult;
-  feedbackColor: 'green' | 'yellow' | 'red';
-}
-
-export class WaitModeController {
-  private currentGroupIndex = 0;
-  private noteGroups: NoteGroup[];  // Groups of notes (single or chord)
-  private correctCount = 0;
-  private totalAttempts = 0;
-  private onGroupAdvance: (index: number, feedback: FeedbackResult) => void;
-
-  constructor(
-    noteGroups: NoteGroup[],
-    onGroupAdvance: (index: number, feedback: FeedbackResult) => void
-  ) {
-    this.noteGroups = noteGroups;
-    this.onGroupAdvance = onGroupAdvance;
-  }
-
-  getCurrentGroup(): NoteGroup | null {
-    if (this.currentGroupIndex >= this.noteGroups.length) {
-      return null; // Song finished
-    }
-    return this.noteGroups[this.currentGroupIndex];
-  }
-
-  /**
-   * Check detected notes against expected notes/chord
-   * @param detectedPitchClasses - Array of detected pitch classes (e.g., ['E', 'G', 'B'])
-   * @returns Feedback result
-   */
-  checkNotes(detectedPitchClasses: string[]): FeedbackResult | null {
-    const expected = this.getCurrentGroup();
-    if (!expected) return null;
-
-    this.totalAttempts++;
-
-    // Get expected note names
-    const expectedNotes = expected.notes.map(n => n.pitch);
-
-    // Match detected against expected
-    const matchResult = matchChord(detectedPitchClasses, expectedNotes);
-
-    // Determine feedback
-    let isPartial = false;
-    let feedbackColor: 'green' | 'yellow' | 'red' = 'red';
-
-    if (matchResult.isCorrect) {
-      feedbackColor = 'green';
-      this.correctCount++;
-      this.currentGroupIndex++;
-      // Notify listeners to advance
-      setTimeout(() => {
-        this.onGroupAdvance(this.currentGroupIndex, {
-          isCorrect: true,
-          isPartial: false,
-          matchResult,
-          feedbackColor: 'green'
-        });
-      }, 300);  // Brief delay to show feedback
-    } else if (matchResult.accuracy > 0) {
-      // Some notes correct but not all
-      isPartial = true;
-      feedbackColor = 'yellow';
-    }
-
-    return {
-      isCorrect: matchResult.isCorrect,
-      isPartial,
-      matchResult,
-      feedbackColor
-    };
-  }
-
-  getAccuracy(): number {
-    if (this.totalAttempts === 0) return 0;
-    return (this.correctCount / this.totalAttempts) * 100;
-  }
-
-  isFinished(): boolean {
-    return this.currentGroupIndex >= this.noteGroups.length;
-  }
-
-  getProgress(): { current: number; total: number } {
-    return {
-      current: this.currentGroupIndex,
-      total: this.noteGroups.length
-    };
-  }
-}
-```
+### Testing & Calibration Notes
+- Start with `windowSec=1.3`, `tickMs=40`, `tailMs=120`, `framesConfirm=3`, `centsTol=50`.
+- Provide a debug overlay (e.g., 12-bin ring) to visualize detected pitch classes during tuning sessions.
+- Log inference duration and matched pitch classes to the console while developing; aim for <60 ms per inference on desktop WebGPU/WebGL.
+- If SAB is unavailable (older Safari), detect capability early and show a friendly “unsupported browser” message for now (future work: fall back to a simpler analyzer).
 
 ---
 
@@ -983,14 +643,16 @@ npm create vite@latest . -- --template react-ts
 npm install
 
 # Install additional packages for MVP
-npm install fast-xml-parser vexflow meyda
+npm install fast-xml-parser vexflow @spotify/basic-pitch onnxruntime-web tonal
 npm install -D @types/node
 ```
 
 **Package Explanations:**
 - `fast-xml-parser` - Parse MusicXML files
 - `vexflow` - Render guitar tabs
-- `meyda` - Extract chromagram for chord detection
+- `@spotify/basic-pitch` - Pretrained polyphonic transcription model
+- `onnxruntime-web` - Browser runtime (WebGPU/WebGL/WASM) for Basic Pitch
+- `tonal` - Pitch-class helpers for chord specification/transposition
 
 ### 3. Configure TypeScript
 
@@ -1041,40 +703,41 @@ npm run dev
 
 # Development Workflow
 
-## Week 1: Audio Foundation with Chromagram
+## Week 1: Audio Foundation with Basic Pitch
 
-**Goal:** Get audio input working and detecting pitch classes.
+**Goal:** Stand up the AudioWorklet → SharedArrayBuffer → Worker pipeline and prove Basic Pitch inference + chord policies run in the browser.
 
 **Tasks:**
-1. Create `AudioEngine` class with Meyda integration
-2. Get microphone permission working
-3. Extract chromagram from audio
-4. Create `ChordDetector` class
-5. Convert chromagram to detected pitch classes
-6. Create simple UI with "Start" button
-7. Console.log detected pitch classes
+1. Add COOP/COEP headers to `vite.config.ts` (see implementation plan).
+2. Copy the SharedArrayBuffer ring buffer, resampler, worker, and hook scaffolding from `Implementation Plan - Pitch Detection.md` into `src/audio`, `src/workers`, and `src/hooks`.
+3. Implement `useChordVerifier` to expose `start/stop/setExpected` and stream worker events.
+4. Hardcode a simple `ChordSpec` (e.g., `E minor`) and log `CHORD_MATCH` / `CHORD_MISS` events to the console while strumming.
+5. Add a minimal UI (`Start listening` button + result log) to verify the worker loop stays under target latency.
+6. Capture inference metrics (tick duration, inference ms) in the console for calibration.
 
-**Deliverable:** Play any note/chord, see pitch classes in console (e.g., "Detected: E, G, B")
+**Deliverable:** Playing open strings or simple chords prints Basic Pitch detections and K-of-N verdicts in the browser console within ~250 ms.
 
 **Files to Create:**
-- `src/services/audioEngine.ts`
-- `src/services/chordDetector.ts`
-- `src/App.tsx` (basic UI)
+- `src/audio/worklets/input-processor.ts`
+- `src/audio/ringBuffer.ts`
+- `src/workers/basicPitchWorker.ts`
+- `src/hooks/useChordVerifier.ts`
+- `src/components/AudioDebugPanel.tsx`
 
 ## Week 2: MusicXML Parsing & Display
 
 **Goal:** Load Song of Storms and display tabs with chords.
 
 **Tasks:**
-1. Create `musicXmlParser.ts`
-2. Fetch and parse `/songs/song-of-storms.musicxml`
-3. Group notes by time position (for chord detection)
-4. Console.log the note groups
-5. Create `NotationDisplay` component with VexFlow
-6. Display first measure with tabs (including chords)
-7. Highlight current note/chord
+1. Create `musicXmlParser.ts`.
+2. Fetch and parse `/songs/song-of-storms.musicxml`.
+3. Group notes by time position (for chord detection).
+4. Console.log the note groups.
+5. Create `NotationDisplay` component with VexFlow.
+6. Display first measure with tabs (including chords).
+7. Highlight current note/chord.
 
-**Deliverable:** Tabs render on screen showing both single notes and chords stacked
+**Deliverable:** Tabs render on screen showing both single notes and chords stacked.
 
 **Files to Create:**
 - `src/services/musicXmlParser.ts`
@@ -1083,20 +746,20 @@ npm run dev
 
 ## Week 3: Chord Matching & Wait Mode
 
-**Goal:** Match detected notes/chords against expected and advance.
+**Goal:** Feed Basic Pitch verdicts into the Wait mode controller and advance notation when chords are correct.
 
 **Tasks:**
-1. Create `chordMatcher.ts` - compare detected vs expected
-2. Create `WaitModeController.ts` - manage progression
-3. Connect chord detector to wait mode controller
-4. Advance when correct note/chord detected
-5. Show visual feedback:
-   - Green = correct
-   - Yellow = partial (some notes in chord correct)
-   - Red = incorrect
-6. Display helpful feedback (e.g., "Missing: B")
+1. Create `chordMatcher.ts` (or extend the policy engine) to translate worker events (`matched`, `missing`, `salience`) into UI-ready feedback.
+2. Create `WaitModeController.ts` to manage progression through grouped notes.
+3. Connect `useChordVerifier` to the controller: call `setExpected` when the current group changes, listen for `CHORD_MATCH` to advance.
+4. Show visual feedback based on `matched/missing` arrays:
+   - Green = success
+   - Yellow = partial (some notes correct)
+   - Red = incorrect / no matches yet
+5. Display helpful tips (e.g., “Missing: B”) using worker diagnostics.
+6. Track streaks and accuracy.
 
-**Deliverable:** Play notes/chords, see tabs advance and get color-coded feedback
+**Deliverable:** Play notes/chords, see tabs advance and get color-coded feedback driven by the worker events.
 
 **Files to Create:**
 - `src/services/chordMatcher.ts`
@@ -1108,32 +771,19 @@ npm run dev
 **Goal:** End-to-end working app with session summary.
 
 **Tasks:**
-1. Build session summary screen
-   - Show accuracy percentage
-   - Show number of correct vs total
-   - Show chords vs single notes breakdown
-2. Add "Restart" button
-3. Basic styling with CSS
-   - Center content
-   - Readable fonts
-   - Clean layout
-4. Test with real guitar
-5. Tune detection thresholds based on testing
-6. Bug fixes
+1. Build session summary screen (accuracy %, chord breakdown, time played).
+2. Add “Restart” button and error states (e.g., unsupported browser when SAB missing).
+3. Basic styling with CSS (center layout, readable fonts, dark theme option).
+4. Manual testing with real guitar (clean DI + mic) to tune policy thresholds.
+5. Log inference metrics in summary (avg latency, match rate) to help future optimization.
+6. Address bugs and UX polish.
 
-**Deliverable:** Working MVP - load song, play through it, see summary
+**Deliverable:** Working MVP – load song, play through it with Basic Pitch verification, view session summary.
 
 **Files to Create:**
 - `src/components/SessionSummary.tsx`
 - `src/styles/global.css`
-
-## Testing Strategy
-
-After each week:
-1. **Manual testing with guitar**
-2. **Tune thresholds** (CHROMA_THRESHOLD, detection intervals)
-3. **Console.log extensively** to debug detection issues
-4. **Test edge cases** (loud/quiet, different guitars, background noise)
+- `src/components/UnsupportedBrowser.tsx`
 
 ---
 
@@ -1145,18 +795,18 @@ Primary testing method for MVP:
 
 1. **Audio Detection Test**
    - Play each guitar string open
-   - Verify correct note detected
-   - Test with different volumes
+   - Verify `useChordVerifier` logs the correct pitch classes (watch `matched/missing` in devtools)
+   - Test with different volumes and both DI + mic inputs
 
 2. **Note Matching Test**
-   - Play Song of Storms slowly
-   - Verify tabs advance correctly
-   - Test incorrect notes (shouldn't advance)
+   - Play Song of Storms slowly in Wait mode
+   - Verify tabs advance only after `CHORD_MATCH` events arrive
+   - Test incorrect notes (should produce `CHORD_MISS` with helpful missing notes)
 
 3. **Browser Compatibility**
-   - Test in Chrome
-   - Test in Firefox
-   - (Safari has Web Audio issues, skip for MVP)
+   - Test in Chrome with WebGPU/WebGL
+   - Test in Firefox (falls back to WebAssembly backend if WebGPU unavailable)
+   - Safari currently lacks SAB by default; show Unsupported state instead of crashing
 
 ## Automated Testing (Phase 2)
 
@@ -1171,16 +821,17 @@ For MVP, skip unit tests. Add later:
 
 ## MVP Requirements
 
-- **Detection Latency**: < 100ms (from note played to detection)
+- **Detection Latency**: < 250 ms median / < 300 ms p95 from pluck to `CHORD_MATCH`
 - **Frame Rate**: 60 FPS for UI updates
-- **Memory**: < 200MB RAM usage
-- **Load Time**: < 2 seconds to first render
+- **Memory**: < 200MB RAM usage (model + buffers)
+- **Load Time**: < 3 seconds to first render (model download included)
 
 ## Optimization Strategy
 
-1. **Detection loop**: Use `requestAnimationFrame` (60 Hz), not `setInterval`
-2. **VexFlow rendering**: Only re-render when notes change
-3. **Audio buffer**: Reuse Float32Array, don't allocate each frame
+1. **Inference cadence**: Keep worker `tickMs` at 40 ms; backpressure if inference > tick to prevent piling up.
+2. **Model warm-up**: Run one silent inference after load to prime WebGPU/WebGL shaders.
+3. **VexFlow rendering**: Only re-render when notes change.
+4. **Audio buffers**: Reuse Float32Arrays for SAB reads/resampling; avoid per-tick allocations.
 
 ---
 
@@ -1192,19 +843,20 @@ For MVP, skip unit tests. Add later:
 - Check browser permissions (chrome://settings/content/microphone)
 - Ensure HTTPS (or localhost) - Web Audio requires secure context
 - Try different browser
+- Confirm COOP/COEP headers are applied; without them the AudioWorklet may fail silently
 
 ### 2. Notes/chords not detected
-- Check Meyda RMS threshold (might be too high)
-- Verify guitar is in tune
-- Try playing note/chord louder and clearer
-- Lower CHROMA_THRESHOLD (try 0.10 instead of 0.15)
-- Check console for chromagram values
+- Make sure the worker reports `modelLoaded=true`; if not, verify Basic Pitch assets are served.
+- Confirm SharedArrayBuffer is available (look for console warning about cross-origin isolation).
+- Verify guitar is in tune and input gain is sufficient (watch waveform debug panel).
+- Adjust `framesConfirm`, `centsTol`, or `K` in chord policy config for edge cases.
+- Use the debug 12-bin ring / event log to see which pitch classes are being detected.
 
 ### 3. Wrong notes detected or too many notes
-- CHROMA_THRESHOLD too low - increase it (try 0.20)
-- Guitar overtones triggering false positives
-- Play notes more cleanly (mute unused strings)
-- Check that chromagram shows expected peaks
+- Ensure `minF0Hz`/`maxF0Hz` gate matches the tuning (Drop-D requires extending to D2).
+- Increase `framesConfirm` to 4 if strums are re-triggering too quickly.
+- Use `debounceMs` to avoid multiple matches while a chord sustains.
+- Check that ORT is using WebGPU/WebGL; WASM-only can increase latency and jitter.
 
 ### 4. VexFlow not rendering
 - Check container has width/height
@@ -1230,37 +882,36 @@ Once MVP is working:
 ```typescript
 // utils/constants.ts
 
-// Audio Engine (Meyda)
-export const FFT_SIZE = 8192;  // Larger FFT for better frequency resolution with chromagram
-export const SMOOTHING_TIME_CONSTANT = 0.8;
-export const BUFFER_SIZE = 8192;  // For Meyda analyzer
-export const SAMPLE_RATE = 44100;
+// Audio / Inference pipeline
+export const INPUT_SAMPLE_RATE = 48000;      // AudioWorklet capture rate
+export const RESAMPLED_RATE = 22050;         // Basic Pitch model rate
+export const WINDOW_SEC = 1.3;               // Rolling window length
+export const TICK_MS = 40;                   // Worker cadence
+export const TAIL_MS = 120;                  // Decision tail
+export const FRAMES_CONFIRM = 3;             // ~120 ms persistence
+export const CENTS_TOL = 50;                 // Allow ±50 cents detune
+export const MIN_F0_HZ = 82.41;              // E2 (extend to 73.42 for Drop-D)
+export const MAX_F0_HZ = 1318.51;            // E6
+export const MATCH_DEBOUNCE_MS = 200;        // Prevent double-triggers on sustain
 
-// Chord Detection (Chromagram)
-export const CHROMA_THRESHOLD = 0.15;  // Minimum normalized energy to consider pitch class present
-export const MIN_RMS_THRESHOLD = 0.01; // Minimum signal strength to process
-
-// Note Matching
-export const DETECTION_INTERVAL_MS = 100; // Check for notes every 100ms (10 Hz)
-
-// Chord Matching Thresholds
-export const SINGLE_NOTE_EXACT_MATCH = true;
-export const TWO_NOTE_CHORD_BOTH_REQUIRED = true;
-export const MULTI_NOTE_CHORD_THRESHOLD = 0.66; // Need 66% of notes for 3+ note chords
+// Policy defaults
+export const DEFAULT_POLICY = 'K_OF_N';
+export const DEFAULT_K = 2;                  // Triads require 2 confirmed pitch classes
 
 // UI
-export const NOTES_PER_LINE = 8; // How many notes to show at once in tabs
-export const FEEDBACK_DISPLAY_MS = 300; // How long to show feedback before advancing
+export const NOTES_PER_LINE = 8;             // How many notes to show at once in tabs
+export const FEEDBACK_DISPLAY_MS = 300;      // How long to show feedback before advancing
 
-// Pitch Classes (matching Meyda's chromagram order)
+// Pitch classes (mod 12 order)
 export const PITCH_CLASSES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
 ```
 
 **Tuning Notes:**
-- If too sensitive (detecting noise): Increase `CHROMA_THRESHOLD` to 0.20-0.25
-- If not sensitive enough (missing notes): Decrease to 0.10-0.12
-- If detection is laggy: Decrease `DETECTION_INTERVAL_MS` to 50ms
-- If detection is jittery: Increase to 150-200ms
+- Reduce `CENTS_TOL` to 35 if bends or vibrato cause false positives.
+- Increase `FRAMES_CONFIRM` to 4–5 for very fast strums to avoid accidental matches.
+- Drop `TICK_MS` to 30 if inference fits comfortably and you want even lower latency.
+- Expand `MIN_F0_HZ` to 73.42 when practicing in Drop-D or other low tunings.
 
 ---
 
@@ -1269,17 +920,17 @@ export const PITCH_CLASSES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', '
 Before starting implementation:
 - [ ] Node.js 18+ installed
 - [ ] Vite + React + TypeScript project created
-- [ ] `fast-xml-parser`, `vexflow`, and `meyda` installed
+- [ ] `fast-xml-parser`, `vexflow`, `@spotify/basic-pitch`, `onnxruntime-web`, and `tonal` installed
 - [ ] MusicXML file in `public/songs/`
 - [ ] Project structure folders created
 - [ ] Git repository initialized
 
 First code to write (Week 1):
-1. `audioEngine.ts` - microphone access + Meyda integration
-2. `chordDetector.ts` - chromagram to pitch classes
-3. Simple UI with "Start" button
-4. Console.log detected pitch classes
+1. AudioWorklet processor + ring buffer to capture audio into SharedArrayBuffer
+2. Basic Pitch worker + adapter (copy from implementation plan scaffold)
+3. `useChordVerifier` hook with `start/stop/setExpected`
+4. Minimal UI that logs `CHORD_MATCH` / `CHORD_MISS`
 
-**Focus:** Get chromagram extraction working first, see pitch classes in console, then build on top.
+**Focus:** Get the Basic Pitch pipeline running first, confirm policies behave correctly, then layer on notation + UI.
 
 **MVP Timeline:** 4 weeks to working chord detection app
