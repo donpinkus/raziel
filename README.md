@@ -133,7 +133,7 @@ cd ~/Desktop/raziel
 # Create Vite project
 npm create vite@latest . -- --template react-ts
 
-# Install dependencies
+# Install dependencies (copies ONNX Runtime assets into public/)
 npm install
 npm install fast-xml-parser vexflow @spotify/basic-pitch onnxruntime-web tonal
 
@@ -147,6 +147,13 @@ npm run dev
 ```
 
 **Important:** You'll need to configure COOP/COEP headers for SharedArrayBuffer support (see TechnicalSpec.md Week 1).
+
+### Pitch Detector Scaffolding
+
+- The Vite app now lives at the repo root (`src`, `public`, etc.) and already includes COOP/COEP headers via `vite.config.ts`.
+- Spotify's Basic Pitch ONNX model is available at `public/models/basic-pitch-nmp.onnx` (source copy tracked in `third_party/basic-pitch/` for licensing).
+- ONNX Runtime Web assets are copied into `public/onnxruntime-web/` by `npm install` (`npm run sync-ort-assets` if you need to refresh them manually) so the app can load the WASM shards offline (see `env.wasm.wasmPaths` in `src/services/basicPitchAdapter.ts`).
+- Core audio files to inspect first: `src/hooks/useChordVerifier.ts`, `src/workers/chordWorker.ts`, `src/audio/worklets/inputProcessor.ts`, and `src/services/basicPitchAdapter.ts`.
 
 ---
 
