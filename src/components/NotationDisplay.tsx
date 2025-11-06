@@ -68,7 +68,11 @@ export default function NotationDisplay({
     context.setFillStyle("rgba(255,255,255,0.5)");
     context.setStrokeStyle(STAVE_COLOR);
 
-    const tabStave = new TabStave(STAVE_PADDING, 20, estimatedWidth - STAVE_PADDING * 2);
+    const tabStave = new TabStave(
+      STAVE_PADDING,
+      20,
+      estimatedWidth - STAVE_PADDING * 2
+    );
     tabStave.addTabGlyph();
     tabStave.setContext(context);
     tabStave.setStyle({ strokeStyle: STAVE_COLOR, fillStyle: STAVE_COLOR });
@@ -145,8 +149,7 @@ function songEventToTabNote(event: SongEvent, isActive: boolean): VFTabNote {
   );
 
   tabNote.setStyle({
-    fillStyle: NOTE_COLOR,
-    strokeStyle: NOTE_COLOR,
+    fillStyle: "red",
   });
   return tabNote;
 }
@@ -173,14 +176,7 @@ class HighlightedTabNote extends VFTabNote {
 
     ctx.save();
     ctx.setFillStyle(this.isActive ? ACTIVE_BG : INACTIVE_BG);
-    drawRoundedRect(
-      ctx,
-      x - width / 2,
-      y,
-      width,
-      height,
-      6
-    );
+    drawRoundedRect(ctx, x - width / 2, y, width, height, 6);
     ctx.restore();
 
     super.draw();
@@ -261,6 +257,5 @@ function pickDuration(durationBeats: number): string {
   return "q";
 }
 const STAVE_COLOR = "#a8b4e6";
-const NOTE_COLOR = "#ffffff";
 const ACTIVE_BG = "rgba(111, 245, 255, 0.25)";
 const INACTIVE_BG = "rgba(255, 255, 255, 0.08)";
