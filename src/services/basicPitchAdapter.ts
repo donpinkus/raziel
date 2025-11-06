@@ -8,7 +8,6 @@ const OUTPUT_FRAMES = "StatefulPartitionedCall:2";
 const OUTPUT_ONSETS = "StatefulPartitionedCall:1";
 
 env.wasm.wasmPaths = `${import.meta.env.BASE_URL}onnxruntime-web/`;
-env.wasm.proxy = true;
 
 export interface BasicPitchLike {
   init(): Promise<void>;
