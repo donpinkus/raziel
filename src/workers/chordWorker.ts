@@ -28,12 +28,17 @@ let tickMs = 40;
 let expected: ChordSpec | null = null;
 let policy: Policy = "K_OF_N";
 let framesConfirm = 3;
+let salienceThreshold = 0.2;
+const missCooldownMs = 250;
 let transposeSemitones = 0;
 let acceptInversions = true;
 let audioWindow = new Float32Array(0);
 let tickHandle: number | null = null;
 let confirmCounter = 0;
 let isProcessing = false;
+let lastMissTs = 0;
+const recentEvents: NoteEvent[][] = [];
+const MAX_BUFFERED_TICKS = 5;
 
 self.onmessage = (event: MessageEvent<IncomingMessage>) => {
   const msg = event.data;
@@ -56,6 +61,7 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
         framesConfirm = msg.payload.framesConfirm;
         transposeSemitones = msg.payload.transposeSemitones;
         acceptInversions = msg.payload.acceptInversions;
+        salienceThreshold = msg.payload.centsTol ? mapCentsTolToSalience(msg.payload.centsTol) : salienceThreshold;
         confirmCounter = 0;
         break;
       }
@@ -98,8 +104,11 @@ async function processTick() {
     const resampled = resampleMonoBuffer(audioWindow, sampleRate, TARGET_SAMPLE_RATE);
     const now = performance.now();
     const notes = await basicPitchAdapter.evaluateMono22k(resampled);
+    recentEvents.push(notes);
+    if (recentEvents.length > MAX_BUFFERED_TICKS) recentEvents.shift();
+    const blendedNotes = aggregateRecentNotes(recentEvents);
     postMessageSafe({ type: "NOTES", t: now / 1000, notes });
-    evaluateChord(notes, now);
+    evaluateChord(blendedNotes, now);
     const inferenceMs = performance.now() - now;
     postMessageSafe({ type: "TICK", t: performance.now() / 1000, inferenceMs });
   } catch (err) {
@@ -115,6 +124,7 @@ function evaluateChord(notes: NoteEvent[], timestamp: number) {
   let lowestMidi = Infinity;
   let lowestPc: PitchClass | null = null;
   notes.forEach((note) => {
+    if (note.salience != null && note.salience < salienceThreshold) return;
     const pc = midiToPitchClass(note.midi, transposeSemitones);
     pcsInWindow.add(pc);
     if (note.midi < lowestMidi) {
@@ -151,16 +161,44 @@ function evaluateChord(notes: NoteEvent[], timestamp: number) {
     confirmCounter += 1;
     if (confirmCounter >= framesConfirm) {
       postMessageSafe({ type: "CHORD_MATCH", t: timestamp / 1000 });
+      confirmCounter = 0;
     }
   } else {
     confirmCounter = 0;
-    postMessageSafe({
-      type: "CHORD_MISS",
-      t: timestamp / 1000,
-      matched,
-      missing,
-    });
+    if (timestamp - lastMissTs > missCooldownMs) {
+      postMessageSafe({
+        type: "CHORD_MISS",
+        t: timestamp / 1000,
+        matched,
+        missing,
+      });
+      lastMissTs = timestamp;
+    }
   }
+}
+
+function aggregateRecentNotes(buffer: NoteEvent[][]): NoteEvent[] {
+  const map = new Map<number, { salience: number; count: number }>();
+  buffer.forEach((bucket) => {
+    bucket.forEach((note) => {
+      const key = Math.round(note.midi);
+      const entry = map.get(key) ?? { salience: 0, count: 0 };
+      entry.salience += note.salience ?? 0.5;
+      entry.count += 1;
+      map.set(key, entry);
+    });
+  });
+  return Array.from(map.entries()).map(([midi, data]) => ({
+    midi,
+    startTime: 0,
+    salience: data.salience / data.count,
+  }));
+}
+
+function mapCentsTolToSalience(centsTol: number): number {
+  if (centsTol <= 25) return 0.4;
+  if (centsTol <= 50) return 0.3;
+  return 0.2;
 }
 
 function postMessageSafe(event: ResultEvent) {
