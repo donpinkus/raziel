@@ -1,5 +1,5 @@
 import { outputToNotesPoly, noteFramesToTime } from "@spotify/basic-pitch";
-import { InferenceSession, Tensor, env } from "onnxruntime-web";
+import { InferenceSession, Tensor } from "onnxruntime-web";
 import type { NoteEvent as WorkerNoteEvent } from "../types/audio";
 
 const MODEL_WINDOW_SAMPLES = 43844; // matches Basic Pitch window
@@ -11,9 +11,6 @@ export interface BasicPitchLike {
   init(): Promise<void>;
   evaluateMono22k(audio: Float32Array): Promise<WorkerNoteEvent[]>;
 }
-
-env.wasm.wasmPaths = `${import.meta.env.BASE_URL}onnxruntime-web/`;
-env.wasm.proxy = true;
 
 export class BasicPitchAdapter implements BasicPitchLike {
   private sessionPromise: Promise<InferenceSession> | null = null;
