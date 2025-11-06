@@ -29,6 +29,39 @@ body {
   gap: 1.75rem;
 }
 
+.notation-region {
+  background: radial-gradient(circle at top, rgba(255, 255, 255, 0.08), rgba(7, 10, 30, 0.9));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  padding: 1.5rem;
+  box-shadow: inset 0 0 25px rgba(0, 0, 0, 0.35);
+}
+
+.notation-display {
+  overflow: hidden;
+}
+
+.notation-display svg {
+  width: 100%;
+  height: auto;
+  color: #d7e2ff;
+  display: block;
+}
+
+.notation-display .vf-tabstavenote text,
+.notation-display .vf-tabnote text {
+  font-family: "JetBrains Mono", "SF Mono", monospace;
+  font-size: 16px;
+  font-weight: 500;
+  fill: #ffffff;
+  text-shadow: 0 0 8px rgba(0, 0, 0, 0.9);
+  dominant-baseline: central;
+}
+
+.notation-display .vf-tabnote.active text {
+  fill: #6df3ff;
+}
+
 .header h1 {
   margin: 0.2rem 0;
 }
