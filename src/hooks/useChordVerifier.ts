@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SharedRingBuffer } from "../audio/ringBuffer";
-import { recorderWorkletSource } from "../audio/worklets/inputProcessor";
 import type { ChordSpec, Policy, ResultEvent } from "../types/audio";
 
 export type UseChordVerifierOpts = {
@@ -43,23 +42,15 @@ export default function useChordVerifier({
   const workerRef = useRef<Worker | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const recorderWorkletURL = useMemo(() => {
-    const src = `(${recorderWorkletSource.toString()})()`;
-    return URL.createObjectURL(
-      new Blob([src], { type: "application/javascript" })
-    );
-  }, []);
+  const recorderWorkletURL = useMemo(
+    () => new URL("../audio/worklets/inputProcessor.ts", import.meta.url),
+    []
+  );
 
   const workerURL = useMemo(
     () => new URL("../workers/chordWorker.ts", import.meta.url),
     []
   );
-
-  useEffect(() => {
-    return () => {
-      URL.revokeObjectURL(recorderWorkletURL);
-    };
-  }, [recorderWorkletURL]);
 
   const cleanup = useCallback(() => {
     workerRef.current?.postMessage({ type: "STOP" });
@@ -100,7 +91,7 @@ export default function useChordVerifier({
       );
       ringBufferRef.current = ringBuffer;
 
-      await audioContext.audioWorklet.addModule(recorderWorkletURL);
+      await audioContext.audioWorklet.addModule(recorderWorkletURL.href);
       const workletNode = new AudioWorkletNode(audioContext, "recorder-worklet");
       workletNodeRef.current = workletNode;
       workletNode.port.postMessage({ sab: ringBuffer.sab });
