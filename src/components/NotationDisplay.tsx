@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import {
+  Barline,
+  BarlineType,
   Formatter,
   Renderer,
   TabNote as VFTabNote,
@@ -67,10 +69,12 @@ export default function NotationDisplay({
     const renderer = new Renderer(container, Renderer.Backends.SVG);
     renderer.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
     const context = renderer.getContext();
-    context.setFont("Inter", 12, "");
-    context.setFillStyle("#e2e8ff");
+    context.setFont("JetBrains Mono", 16, "500");
+    context.setFillStyle("#ffffff");
+    context.setStrokeStyle(STAVE_COLOR);
 
-    const tabStave = new TabStave(10, 20, DEFAULT_WIDTH - 20);
+    const STAVE_PADDING = 40;
+    const tabStave = new TabStave(STAVE_PADDING, 20, DEFAULT_WIDTH - 2 * STAVE_PADDING);
     tabStave.addTabGlyph();
     tabStave.setContext(context);
     tabStave.setStyle({ strokeStyle: STAVE_COLOR, fillStyle: STAVE_COLOR });
@@ -87,8 +91,21 @@ export default function NotationDisplay({
     voice.setStrict(false);
     voice.addTickables(tabNotes);
 
-    new Formatter().joinVoices([voice]).format([voice], DEFAULT_WIDTH - 80);
+    new Formatter().joinVoices([voice]).format([voice], DEFAULT_WIDTH - 2 * STAVE_PADDING - 40);
     voice.draw(context, tabStave);
+
+    // Add bar lines between measures
+    let lastMeasure = eventsToRender.slice[0]?.measureNumber;
+    tabNotes.forEach((note, idx) => {
+      const event = eventsToRender.slice[idx];
+      if (event && event.measureNumber !== lastMeasure) {
+        const barline = new Barline(BarlineType.SINGLE);
+        barline.setStave(tabStave);
+        barline.setX(note.getAbsoluteX() - 10);
+        barline.draw();
+        lastMeasure = event.measureNumber;
+      }
+    });
   }, [eventsToRender, song.timeSignature, currentIndex]);
 
   return <div className="notation-display" ref={containerRef} aria-label="Guitar tablature" />;
@@ -162,6 +179,6 @@ function pickDuration(durationBeats: number): string {
   if (durationBeats >= 0.75 && durationBeats < 1) return "8d";
   return "q";
 }
-const STAVE_COLOR = "#6d78a8";
-const NOTE_COLOR = "#d7e2ff";
+const STAVE_COLOR = "#a8b4e6";
+const NOTE_COLOR = "#ffffff";
 const ACTIVE_COLOR = "#6df3ff";

@@ -37,18 +37,25 @@ body {
   box-shadow: inset 0 0 25px rgba(0, 0, 0, 0.35);
 }
 
+.notation-display {
+  overflow: hidden;
+}
+
 .notation-display svg {
   width: 100%;
   height: auto;
   color: #d7e2ff;
+  display: block;
 }
 
 .notation-display .vf-tabstavenote text,
 .notation-display .vf-tabnote text {
   font-family: "JetBrains Mono", "SF Mono", monospace;
-  font-size: 18px;
-  fill: #d7e2ff;
-  text-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+  font-size: 16px;
+  font-weight: 500;
+  fill: #ffffff;
+  text-shadow: 0 0 8px rgba(0, 0, 0, 0.9);
+  dominant-baseline: central;
 }
 
 .notation-display .vf-tabnote.active text {
