@@ -148,6 +148,13 @@ npm run dev
 
 **Important:** You'll need to configure COOP/COEP headers for SharedArrayBuffer support (see TechnicalSpec.md Week 1).
 
+### Pitch Detector Scaffolding
+
+- The Vite app now lives at the repo root (`src`, `public`, etc.) and already includes COOP/COEP headers via `vite.config.ts`.
+- Spotify's Basic Pitch ONNX model is available at `public/models/basic-pitch-nmp.onnx` (source copy tracked in `third_party/basic-pitch/` for licensing).
+- ONNX Runtime Web's WASM assets are mirrored in `public/onnxruntime-web/`; the adapter points there so no CDN is needed offline.
+- Core audio files to inspect first: `src/hooks/useChordVerifier.ts`, `src/workers/chordWorker.ts`, `src/audio/worklets/inputProcessor.ts`, and `src/services/basicPitchAdapter.ts`.
+
 ---
 
 ## Development Phases
