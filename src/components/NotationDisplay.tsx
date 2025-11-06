@@ -15,6 +15,8 @@ type RenderCtx = ReturnType<Renderer["getContext"]>;
 // SVG viewport size for the rendered TAB staff
 const DEFAULT_WIDTH = 900;
 const DEFAULT_HEIGHT = 220;
+const STAVE_PADDING = 40;
+const NOTE_SPACING = 80; // horizontal space we allot per event when sizing the stave
 const STRING_OPEN_MIDI: Record<number, number> = {
   1: 64, // E4
   2: 59, // B3
@@ -57,17 +59,16 @@ export default function NotationDisplay({
 
     // Set up a fresh VexFlow SVG renderer every time the windowed slice changes.
     const renderer = new Renderer(container, Renderer.Backends.SVG);
-    renderer.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    const estimatedWidth = Math.max(
+      DEFAULT_WIDTH,
+      song.events.length * NOTE_SPACING + STAVE_PADDING * 2
+    );
+    renderer.resize(estimatedWidth, DEFAULT_HEIGHT);
     const context = renderer.getContext();
     context.setFillStyle("rgba(255,255,255,0.5)");
     context.setStrokeStyle(STAVE_COLOR);
 
-    const STAVE_PADDING = 40;
-    const tabStave = new TabStave(
-      STAVE_PADDING,
-      20,
-      DEFAULT_WIDTH - 2 * STAVE_PADDING
-    );
+    const tabStave = new TabStave(STAVE_PADDING, 20, estimatedWidth - STAVE_PADDING * 2);
     tabStave.addTabGlyph();
     tabStave.setContext(context);
     tabStave.setStyle({ strokeStyle: STAVE_COLOR, fillStyle: STAVE_COLOR });
@@ -85,11 +86,11 @@ export default function NotationDisplay({
     voice.setStrict(false);
     voice.addTickables(tabNotes);
 
-    const formatWidth = Math.max(DEFAULT_WIDTH, tabNotes.length * 80);
+    const formatWidth = tabStave.getWidth() - 40;
     new Formatter().joinVoices([voice]).format([voice], formatWidth);
     voice.draw(context, tabStave);
 
-    setTrackWidth(formatWidth + STAVE_PADDING * 2);
+    setTrackWidth(estimatedWidth);
 
     const activeNote = tabNotes[currentIndex];
     if (activeNote) {
