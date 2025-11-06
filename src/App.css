@@ -1,75 +1,139 @@
 :root {
-  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
-  color: #eef2ff;
-  background: #060b23;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #e2e8ff;
+  background: #050816;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background: radial-gradient(circle at top, #10194b, #050816 60%);
+  background: radial-gradient(circle at top, #14183b, #03040d 60%);
 }
 
-main.app {
+.practice-root {
   min-height: 100vh;
   display: flex;
-  align-items: center;
   justify-content: center;
-  padding: 2rem;
+  padding: 3rem 1.5rem;
 }
 
 .panel {
-  width: min(720px, 100%);
-  background: rgba(10, 13, 35, 0.85);
+  width: min(960px, 100%);
+  background: rgba(10, 13, 35, 0.9);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+  border-radius: 24px;
   padding: 2.5rem;
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+}
+
+.header h1 {
+  margin: 0.2rem 0;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.75rem;
+  color: rgba(226, 232, 255, 0.6);
+  margin: 0;
+}
+
+.meta {
+  margin: 0.25rem 0 0;
+  font-size: 0.9rem;
+  color: rgba(226, 232, 255, 0.7);
+}
+
+.meta.error {
+  color: #ffb1b1;
+}
+
+.current-target h2 {
+  margin: 0.2rem 0;
+  font-size: 1.8rem;
+}
+
+.target-notes {
+  margin: 0;
+  color: rgba(226, 232, 255, 0.85);
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+}
+
+.stats-grid strong {
+  display: block;
+  font-size: 1.5rem;
+  margin-top: 0.4rem;
 }
 
 .controls {
   display: flex;
-  gap: 1rem;
-  margin-block: 1.5rem;
+  flex-wrap: wrap;
+  gap: 0.8rem;
 }
 
-button {
-  flex: 1;
-  border: none;
+.controls button {
+  flex: 1 1 30%;
   border-radius: 999px;
+  border: none;
   padding: 0.85rem 1.2rem;
-  font-size: 1rem;
   font-weight: 600;
+  font-size: 1rem;
   cursor: pointer;
   background: linear-gradient(120deg, #3a7bd5, #00d2ff);
   color: #050816;
   transition: opacity 150ms ease;
 }
 
-button:disabled {
+.controls button:nth-of-type(2) {
+  background: linear-gradient(120deg, #fc5c7d, #6a82fb);
+}
+
+.controls button:nth-of-type(3) {
+  background: rgba(255, 255, 255, 0.12);
+  color: #e2e8ff;
+}
+
+.controls button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.error {
-  color: #ff9b9b;
-}
-
-.log {
+.log ul {
   list-style: none;
+  margin: 0.75rem 0 0;
   padding: 0;
-  margin: 0;
-  display: grid;
-  gap: 0.5rem;
   max-height: 220px;
-  overflow: auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .log li {
-  padding: 0.65rem 0.9rem;
+  padding: 0.6rem 0.9rem;
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.05);
-  border-radius: 8px;
-  font-family: "JetBrains Mono", "SF Mono", monospace;
+  font-family: \"JetBrains Mono\", \"SF Mono\", monospace;
   font-size: 0.9rem;
+}
+
+.log li[data-type=\"match\"] {
+  border: 1px solid rgba(0, 210, 120, 0.4);
+}
+
+.log li[data-type=\"miss\"] {
+  border: 1px solid rgba(255, 99, 132, 0.4);
+}
+
+.log .placeholder {
+  text-align: center;
+  opacity: 0.6;
 }

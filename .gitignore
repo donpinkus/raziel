@@ -18,6 +18,7 @@ public/onnxruntime-web/
 build/
 dist/
 dist-ssr/
+.vite/
 
 # Environment variables
 .env

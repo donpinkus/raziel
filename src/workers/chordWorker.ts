@@ -33,6 +33,7 @@ let acceptInversions = true;
 let audioWindow = new Float32Array(0);
 let tickHandle: number | null = null;
 let confirmCounter = 0;
+let isProcessing = false;
 
 self.onmessage = (event: MessageEvent<IncomingMessage>) => {
   const msg = event.data;
@@ -76,7 +77,7 @@ self.onmessage = (event: MessageEvent<IncomingMessage>) => {
 function startTicking() {
   if (tickHandle !== null) return;
   tickHandle = self.setInterval(() => {
-    processTick().catch((err) => reportError(err));
+    processTick();
   }, tickMs);
 }
 
@@ -88,16 +89,24 @@ function ensureWindow() {
 }
 
 async function processTick() {
+  if (isProcessing) return;
   if (!reader || !expected) return;
-  ensureWindow();
-  reader.readLatest(audioWindow.length, audioWindow);
-  const resampled = resampleMonoBuffer(audioWindow, sampleRate, TARGET_SAMPLE_RATE);
-  const now = performance.now();
-  const notes = await basicPitchAdapter.evaluateMono22k(resampled);
-  postMessageSafe({ type: "NOTES", t: now / 1000, notes });
-  evaluateChord(notes, now);
-  const inferenceMs = performance.now() - now;
-  postMessageSafe({ type: "TICK", t: performance.now() / 1000, inferenceMs });
+  isProcessing = true;
+  try {
+    ensureWindow();
+    reader.readLatest(audioWindow.length, audioWindow);
+    const resampled = resampleMonoBuffer(audioWindow, sampleRate, TARGET_SAMPLE_RATE);
+    const now = performance.now();
+    const notes = await basicPitchAdapter.evaluateMono22k(resampled);
+    postMessageSafe({ type: "NOTES", t: now / 1000, notes });
+    evaluateChord(notes, now);
+    const inferenceMs = performance.now() - now;
+    postMessageSafe({ type: "TICK", t: performance.now() / 1000, inferenceMs });
+  } catch (err) {
+    reportError(err);
+  } finally {
+    isProcessing = false;
+  }
 }
 
 function evaluateChord(notes: NoteEvent[], timestamp: number) {

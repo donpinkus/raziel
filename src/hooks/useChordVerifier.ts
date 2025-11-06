@@ -72,6 +72,15 @@ export default function useChordVerifier({
     try {
       setErrorMessage(null);
       setStatus("loading");
+      if (
+        typeof window === "undefined" ||
+        typeof SharedArrayBuffer === "undefined" ||
+        !window.crossOriginIsolated
+      ) {
+        throw new Error(
+          "SharedArrayBuffer unavailable. Please use Chrome/Edge over HTTPS with COOP/COEP enabled."
+        );
+      }
       const audioContext = new AudioContext({ latencyHint: "interactive" });
       acRef.current = audioContext;
       const mediaStream = await navigator.mediaDevices.getUserMedia({
