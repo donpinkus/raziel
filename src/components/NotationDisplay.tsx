@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Barline,
   BarlineType,
@@ -15,6 +15,8 @@ type RenderCtx = ReturnType<Renderer["getContext"]>;
 // SVG viewport size for the rendered TAB staff
 const DEFAULT_WIDTH = 900;
 const DEFAULT_HEIGHT = 220;
+const STAVE_PADDING = 40;
+const NOTE_SPACING = 80; // horizontal space we allot per event when sizing the stave
 const STRING_OPEN_MIDI: Record<number, number> = {
   1: 64, // E4
   2: 59, // B3
@@ -42,46 +44,34 @@ export type NotationDisplayProps = {
 export default function NotationDisplay({
   song,
   currentIndex,
-  windowSize = 8,
 }: NotationDisplayProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-
-  const eventsToRender = useMemo(() => {
-    const start = Math.max(0, currentIndex - Math.floor(windowSize / 2));
-    const slice = song.events.slice(start, start + windowSize);
-    if (import.meta.env.DEV && slice.length && start === 0) {
-      // Helpful debug log to confirm positions once per load
-      console.debug(
-        "[NotationDisplay] First event positions",
-        slice[0].notes.map((note) => ({
-          name: note.name,
-          inferred: inferStringAndFret(note.midi),
-          originalString: note.string,
-          originalFret: note.fret,
-        }))
-      );
-    }
-    return { slice, offset: start };
-  }, [song.events, currentIndex, windowSize]);
+  const svgWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [activeX, setActiveX] = useState(0);
+  const [trackWidth, setTrackWidth] = useState(DEFAULT_WIDTH);
+  const anchorX = 120;
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     container.innerHTML = "";
-    if (!eventsToRender.slice.length) return;
+    if (!song.events.length) return;
 
     // Set up a fresh VexFlow SVG renderer every time the windowed slice changes.
     const renderer = new Renderer(container, Renderer.Backends.SVG);
-    renderer.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    const estimatedWidth = Math.max(
+      DEFAULT_WIDTH,
+      song.events.length * NOTE_SPACING + STAVE_PADDING * 2
+    );
+    renderer.resize(estimatedWidth, DEFAULT_HEIGHT);
     const context = renderer.getContext();
     context.setFillStyle("rgba(255,255,255,0.5)");
     context.setStrokeStyle(STAVE_COLOR);
 
-    const STAVE_PADDING = 40;
     const tabStave = new TabStave(
       STAVE_PADDING,
       20,
-      DEFAULT_WIDTH - 2 * STAVE_PADDING
+      estimatedWidth - STAVE_PADDING * 2
     );
     tabStave.addTabGlyph();
     tabStave.setContext(context);
@@ -89,8 +79,8 @@ export default function NotationDisplay({
     tabStave.draw();
 
     // Convert each SongEvent into a VexFlow TabNote, flagging the active event.
-    const tabNotes = eventsToRender.slice.map((event, idx) =>
-      songEventToTabNote(event, eventsToRender.offset + idx === currentIndex)
+    const tabNotes = song.events.map((event, idx) =>
+      songEventToTabNote(event, idx === currentIndex)
     );
 
     const voice = new Voice({
@@ -100,15 +90,21 @@ export default function NotationDisplay({
     voice.setStrict(false);
     voice.addTickables(tabNotes);
 
-    new Formatter()
-      .joinVoices([voice])
-      .format([voice], DEFAULT_WIDTH - 2 * STAVE_PADDING - 40);
+    const formatWidth = tabStave.getWidth() - 40;
+    new Formatter().joinVoices([voice]).format([voice], formatWidth);
     voice.draw(context, tabStave);
 
+    setTrackWidth(estimatedWidth);
+
+    const activeNote = tabNotes[currentIndex];
+    if (activeNote) {
+      setActiveX(activeNote.getAbsoluteX());
+    }
+
     // Draw simple bar lines whenever the measure number changes.
-    let lastMeasure = eventsToRender.slice[0]?.measureNumber;
+    let lastMeasure = song.events[0]?.measureNumber;
     tabNotes.forEach((note, idx) => {
-      const event = eventsToRender.slice[idx];
+      const event = song.events[idx];
       if (event && event.measureNumber !== lastMeasure) {
         const barline = new Barline(BarlineType.SINGLE);
         barline.setStave(tabStave);
@@ -117,14 +113,26 @@ export default function NotationDisplay({
         lastMeasure = event.measureNumber;
       }
     });
-  }, [eventsToRender, song.timeSignature, currentIndex]);
+  }, [song.events, song.timeSignature, currentIndex]);
+
+  const offset = Math.max(0, activeX - anchorX);
 
   return (
-    <div
-      className="notation-display"
-      ref={containerRef}
-      aria-label="Guitar tablature"
-    />
+    <div className="notation-display" aria-label="Guitar tablature">
+      <div className="notation-display__viewport">
+        <div
+          className="notation-display__track"
+          ref={svgWrapperRef}
+          style={{
+            width: trackWidth,
+            transform: `translateX(${-offset}px)`,
+          }}
+        >
+          <div ref={containerRef} />
+        </div>
+        <div className="notation-display__anchor" style={{ left: anchorX }} />
+      </div>
+    </div>
   );
 }
 
@@ -141,8 +149,7 @@ function songEventToTabNote(event: SongEvent, isActive: boolean): VFTabNote {
   );
 
   tabNote.setStyle({
-    fillStyle: NOTE_COLOR,
-    strokeStyle: NOTE_COLOR,
+    fillStyle: "red",
   });
   return tabNote;
 }
@@ -169,14 +176,7 @@ class HighlightedTabNote extends VFTabNote {
 
     ctx.save();
     ctx.setFillStyle(this.isActive ? ACTIVE_BG : INACTIVE_BG);
-    drawRoundedRect(
-      ctx,
-      x - width / 2,
-      y,
-      width,
-      height,
-      6
-    );
+    drawRoundedRect(ctx, x - width / 2, y, width, height, 6);
     ctx.restore();
 
     super.draw();
@@ -257,6 +257,5 @@ function pickDuration(durationBeats: number): string {
   return "q";
 }
 const STAVE_COLOR = "#a8b4e6";
-const NOTE_COLOR = "#ffffff";
 const ACTIVE_BG = "rgba(111, 245, 255, 0.25)";
 const INACTIVE_BG = "rgba(255, 255, 255, 0.08)";
