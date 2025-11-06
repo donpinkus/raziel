@@ -29,6 +29,18 @@ body {
   gap: 1.75rem;
 }
 
+.notation-region {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 1rem;
+}
+
+.notation-display svg {
+  width: 100%;
+  height: auto;
+}
+
 .header h1 {
   margin: 0.2rem 0;
 }

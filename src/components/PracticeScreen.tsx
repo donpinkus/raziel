@@ -3,6 +3,7 @@ import type { PitchClass } from "../types/audio";
 import useChordVerifier from "../hooks/useChordVerifier";
 import { usePracticeSession } from "../hooks/usePracticeSession";
 import { pitchClassToName } from "../utils/pitch";
+import NotationDisplay from "./NotationDisplay";
 
 const DEFAULT_EXPECTED = {
   name: "E minor",
@@ -77,6 +78,14 @@ export default function PracticeScreen() {
           <p className="eyebrow">Raziel MVP</p>
           <h1>{songTitle}</h1>
           {tempo ? <p className="meta">Tempo: {tempo} BPM</p> : null}
+        </div>
+
+        <div className="notation-region">
+          {songState.status === "ready" ? (
+            <NotationDisplay song={songState.song} currentIndex={progress.index} />
+          ) : (
+            <p className="meta">Loading tablature…</p>
+          )}
         </div>
 
         <div className="current-target">
